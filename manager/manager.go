@@ -5,8 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ermos/annotation/parser"
-	"github.com/julienschmidt/httprouter"
-	"io/ioutil"
+	"github.com/gofiber/fiber/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,29 +18,23 @@ type Manager struct {
 		Method     string
 		RequestURI string
 	}
-	Request    *http.Request
 	User       map[string]interface{}
 	Param      map[string]interface{}
 	Query      map[string]string
 	Payload    map[string]interface{}
 	data       map[string]interface{}
 	annotation parser.API
-	ps         httprouter.Params
-}
-
-func (m *Manager) Next(next httprouter.Handle, w http.ResponseWriter, r *http.Request) {
-	next(w, r, m.ps)
 }
 
 // New allows creating new manager instance
-func New(a parser.API, r *http.Request, ps httprouter.Params) (m *Manager, status int, err error) {
+func New(a parser.API, c *fiber.Ctx) (m *Manager, status int, err error) {
 	m = &Manager{
 		annotation: a,
 	}
 
 	m.data = make(map[string]interface{})
 
-	status, err = m.setRequest(r, ps)
+	status, err = m.setRequest(c)
 
 	return
 }
@@ -54,23 +47,21 @@ func (m *Manager) Get(key string) interface{} {
 	return m.data[key]
 }
 
-func (m *Manager) setRequest(r *http.Request, ps httprouter.Params) (status int, err error) {
-	m.ps = ps
-	m.Request = r
+func (m *Manager) setRequest(c *fiber.Ctx) (status int, err error) {
 
-	m.setQueryParams(r)
+	m.setQueryParams(c)
 
-	err = m.setParams(m.ps, m.annotation)
+	err = m.setParams(c, m.annotation)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
 
-	if r.Method == "POST" || r.Method == "PUT" {
-		ct := strings.Split(r.Header.Get("Content-Type"), ";")
+	if c.Method() == "POST" || c.Method() == "PUT" {
+		ct := strings.Split(string(c.Request().Header.ContentType()), ";")
 
 		switch strings.ToLower(ct[0]) {
 		case "application/json":
-			err = m.getPayloadJSON(r, m.annotation)
+			err = m.getPayloadJSON(c, m.annotation)
 			if err != nil {
 				return http.StatusBadRequest, err
 			}
@@ -83,24 +74,15 @@ func (m *Manager) setRequest(r *http.Request, ps httprouter.Params) (status int,
 }
 
 // setParams allows getting parameters from url and convert it into the good type
-func (m *Manager) setParams(ps httprouter.Params, a parser.API) error {
-	var value interface{}
+func (m *Manager) setParams(c *fiber.Ctx, a parser.API) error {
 	var err error
 	result := make(map[string]interface{})
 
 	for _, param := range a.Validate.Params {
-		value = nil
-
-		for _, p := range ps {
-			if p.Key == param.Key {
-				value, err = convert(param.Type, p.Value)
-				if err != nil {
-					return fmt.Errorf("%s's type is incorrect for this field", param.Key)
-				}
-			}
+		result[param.Key], err = convert(param.Type, c.Params(param.Key))
+		if err != nil {
+			return fmt.Errorf("%s's type is incorrect for this field", param.Key)
 		}
-
-		result[param.Key] = value
 	}
 
 	m.Param = result
@@ -165,7 +147,7 @@ func convert(trueType string, value interface{}) (interface{}, error) {
 }
 
 // getPayloadJSON allows parsing payload written with JSON
-func (m *Manager) getPayloadJSON(r *http.Request, a parser.API) error {
+func (m *Manager) getPayloadJSON(c *fiber.Ctx, a parser.API) error {
 	var value interface{}
 	var err error
 	var data map[string]interface{}
@@ -175,7 +157,7 @@ func (m *Manager) getPayloadJSON(r *http.Request, a parser.API) error {
 		return nil
 	}
 
-	err = getPayload(r, &data)
+	err = json.Unmarshal(c.Body(), &data)
 	if err != nil {
 		return err
 	}
@@ -203,21 +185,11 @@ func (m *Manager) getPayloadJSON(r *http.Request, a parser.API) error {
 	return nil
 }
 
-// getPayload allows to get request payload
-func getPayload(r *http.Request, v interface{}) error {
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-
-	return json.Unmarshal(body, v)
-}
-
 // setQueryParams allows to get query parameters from URL
-func (m *Manager) setQueryParams(r *http.Request) {
+func (m *Manager) setQueryParams(c *fiber.Ctx) {
 	list := make(map[string]string)
 
-	split := strings.Split(r.URL.String(), "?")
+	split := strings.Split(c.OriginalURL(), "?")
 
 	if len(split) < 2 {
 		m.Query = list
@@ -226,7 +198,7 @@ func (m *Manager) setQueryParams(r *http.Request) {
 
 	query := strings.Split(split[1], "&")
 	for _, q := range query {
-		split := strings.Split(q, "=")
+		split = strings.Split(q, "=")
 		if len(split) == 1 {
 			list[split[0]] = split[0]
 		} else {

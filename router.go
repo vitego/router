@@ -1,17 +1,14 @@
 package router
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/ermos/annotation/parser"
-	"github.com/julienschmidt/httprouter"
-	"github.com/rs/cors"
+	"github.com/gofiber/fiber/v2"
 	"github.com/vitego/config"
 	"github.com/vitego/router/manager"
 	"github.com/vitego/router/response"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"reflect"
@@ -28,14 +25,10 @@ import (
 func ListenAndServe(routes []byte, ch interface{}, eh exceptionHandler, mwh middlewareHandler) error {
 	var (
 		annotations []parser.API
-		handler     interface{}
 		err         error
 	)
 
-	router := httprouter.New()
-
-	handler = router
-	router.PanicHandler = eh.Render
+	router := fiber.New()
 
 	err = json.Unmarshal(routes, &annotations)
 	if err != nil {
@@ -54,15 +47,15 @@ func ListenAndServe(routes []byte, ch interface{}, eh exceptionHandler, mwh midd
 
 			switch strings.ToLower(r.Method) {
 			case "get":
-				router.GET(routePath, call(route, ch, mwh))
+				router.Get(routePath, call(route, ch, mwh)...)
 			case "post":
-				router.POST(routePath, call(route, ch, mwh))
+				router.Post(routePath, call(route, ch, mwh)...)
 			case "put":
-				router.PUT(routePath, call(route, ch, mwh))
+				router.Put(routePath, call(route, ch, mwh)...)
 			case "patch":
-				router.PATCH(routePath, call(route, ch, mwh))
+				router.Patch(routePath, call(route, ch, mwh)...)
 			case "delete":
-				router.DELETE(routePath, call(route, ch, mwh))
+				router.Delete(routePath, call(route, ch, mwh)...)
 			}
 		}
 	}
@@ -71,20 +64,20 @@ func ListenAndServe(routes []byte, ch interface{}, eh exceptionHandler, mwh midd
 		printHeader(config.Get("app.name"), config.Get("router.port"))
 	}
 
-	if config.Get("router.cors") != "" {
-		c := cors.New(cors.Options{
-			AllowedOrigins:   strings.Split(config.Get("router.cors.allowedOrigins"), ","),
-			AllowedHeaders:   strings.Split(config.Get("router.cors.allowedHeaders"), ","),
-			AllowedMethods:   strings.Split(config.Get("router.cors.allowedMethods"), ","),
-			AllowCredentials: config.Get("router.cors.allowCredentials") == "true",
-			// Enable Debugging for testing, consider disabling in production
-			Debug: config.Get("app.debug") == "true",
-		})
+	//if config.Get("router.cors") != "" {
+	//	c := cors.New(cors.Options{
+	//		AllowedOrigins:   strings.Split(config.Get("router.cors.allowedOrigins"), ","),
+	//		AllowedHeaders:   strings.Split(config.Get("router.cors.allowedHeaders"), ","),
+	//		AllowedMethods:   strings.Split(config.Get("router.cors.allowedMethods"), ","),
+	//		AllowCredentials: config.Get("router.cors.allowCredentials") == "true",
+	//		// Enable Debugging for testing, consider disabling in production
+	//		Debug: config.Get("app.debug") == "true",
+	//	})
+	//
+	//	handler = c.Handler(router)
+	//}
 
-		handler = c.Handler(router)
-	}
-
-	return http.ListenAndServe(fmt.Sprintf(":%s", config.Get("router.port")), handler.(http.Handler))
+	return router.Listen(fmt.Sprintf(":%s", config.Get("router.port")))
 }
 
 func printHeader(appName, port string) {
@@ -110,52 +103,64 @@ func printHeader(appName, port string) {
 	fmt.Printf(" |\n--%s\n", separator)
 }
 
-func call(route parser.API, handler interface{}, mwh middlewareHandler) (handle httprouter.Handle) {
+func call(route parser.API, handler interface{}, mwh middlewareHandler) (handles []fiber.Handler) {
 	build := reflect.ValueOf(handler).MethodByName(route.Controller)
 
-	handle = getController(build)
+	handles = append(handles, initRequest(route))
+
 	for _, mw := range mwh.Defaults() {
-		handle = getMiddleware(mw, handle)
+		handles = append(handles, getMiddleware(mw))
 	}
 
 	mws := mwh.Middleware()
-	for _, mw := range route.Middleware {
+	rmws := route.Middleware
+
+	for i, j := 0, len(rmws)-1; i < j; i, j = i+1, j-1 {
+		rmws[i], rmws[j] = rmws[j], rmws[i]
+	}
+
+	for _, mw := range rmws {
 		if mws[mw] == nil {
 			log.Fatalf("%s middleware isn't specified", mw)
 		}
-		handle = getMiddleware(mws[mw], handle)
+		handles = append(handles, getMiddleware(mws[mw]))
 	}
 
-	return initRequest(route, handle)
+	handles = append(handles, getController(build))
+
+	return
 }
 
-func getMiddleware(mw Middleware, next httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		mw.Run(r.Context().Value("manager").(*manager.Manager), next, w, r)
+func getMiddleware(mw Middleware) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return mw.Run(c, c.Locals("manager").(*manager.Manager))
 	}
 }
 
-func getController(build reflect.Value) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		c := make([]reflect.Value, 3)
-		c = []reflect.Value{
-			reflect.ValueOf(context.Background()),
-			reflect.ValueOf(r.Context().Value("manager")),
-			reflect.ValueOf(w),
+func getController(build reflect.Value) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		ctr := make([]reflect.Value, 3)
+
+		ctr = []reflect.Value{
+			reflect.ValueOf(c),
+			reflect.ValueOf(c.Context().Value("manager")),
 		}
-		_ = build.Call(c)
+
+		_ = build.Call(ctr)
+
+		return nil
 	}
 }
 
-func initRequest(route parser.API, next httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		m, status, err := manager.New(route, r, ps)
+func initRequest(route parser.API) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		m, status, err := manager.New(route, c)
 		if err != nil {
 			response.Fatal(err, status)
 		}
 
-		ctx := context.WithValue(r.Context(), "manager", m)
+		c.Locals("manager", m)
 
-		next(w, r.WithContext(ctx), ps)
+		return c.Next()
 	}
 }

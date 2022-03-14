@@ -1,9 +1,8 @@
 package router
 
 import (
-	"github.com/julienschmidt/httprouter"
+	"github.com/gofiber/fiber/v2"
 	"github.com/vitego/router/manager"
-	"net/http"
 )
 
 type middlewareHandler interface {
@@ -12,9 +11,5 @@ type middlewareHandler interface {
 }
 
 type Middleware interface {
-	Run(m *manager.Manager, next httprouter.Handle, w http.ResponseWriter, r *http.Request)
+	Run(c *fiber.Ctx, m *manager.Manager) error
 }
-
-//func Handle(m *manager.Manager, next httprouter.Handle) httprouter.Handle {
-//
-//}

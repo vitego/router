@@ -1,7 +1,8 @@
 package mw
 
 import (
-	"github.com/julienschmidt/httprouter"
+	"fmt"
+	"github.com/gofiber/fiber/v2"
 	"github.com/vitego/router/manager"
 	"log"
 	"net/http"
@@ -9,16 +10,19 @@ import (
 
 type RequestMiddleware struct{}
 
-func (RequestMiddleware) Run(m *manager.Manager, next httprouter.Handle, w http.ResponseWriter, r *http.Request) {
-	if r.Method != "OPTIONS" {
-		m.Set("ipAddr", getIPAddr(r))
+func (RequestMiddleware) Run(c *fiber.Ctx, m *manager.Manager) error {
+	if c.Method() != "OPTIONS" {
 		log.Printf("%s \"%s %s\"\n",
-			m.Get("ipAddr").(string),
-			r.Method,
-			r.RequestURI,
+			c.IP(),
+			c.Method(),
+			c.Request().URI().String(),
 		)
 	}
-	m.Next(next, w, r)
+
+	_ = c.Next()
+
+	fmt.Println("ok")
+	return nil
 }
 
 func getIPAddr(r *http.Request) string {
